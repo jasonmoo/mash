@@ -1,117 +1,189 @@
 package mash
 
 import (
-	// "math"
+	"bufio"
+	"bytes"
+	"crypto/md5"
+	"crypto/rand"
+	"encoding/binary"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"os"
 	"testing"
 	// go test should output images or even ascii patterns
 )
 
-func TestUint32(t *testing.T) {
+// func hashfunc(data []byte) uint64 {
+// 	const full_width_prime uint64 = 0xFFFFFFFFFFFFFFCF
+// 	var h uint64 = full_width_prime
+// 	for i, b := range data {
+// 		var ib = uint64(i) * (uint64(b) ^ full_width_prime)
+// 		h ^= uint64(b)*
+// 			(full_width_prime^(ib<<16))*(full_width_prime^(ib<<40)) ^
+// 			(full_width_prime^(ib<<32))*(full_width_prime^(ib<<8)) ^
+// 			(full_width_prime^(ib<<48))*(full_width_prime^(ib<<56)) ^
+// 			(full_width_prime^(ib<<24))*ib
+// 	}
+// 	return h
+// }
 
-	size := uint32(5)
-
-	hits := make([]uint32, size)
-
-	for i := uint32(97); i < 127; i++ {
-		hits[Fnv1a32(Uint32(0xa, i))%size]++
-	}
-
-	for i, ct := range hits {
-		t.Logf("n: %d, ct: %d\n", i, ct)
-	}
-
-	// for c := uint32(0); c < 255; c++ {
-	// 	for i := uint32(0); i < 255; i++ {
-	// 		hits[Uint32(c, i)%size]++
-	// 	}
-	// 	var mean uint32
-	// 	for _, v := range hits {
-	// 		mean += v
-	// 	}
-	// 	mean /= uint32(len(hits))
-
-	// 	var stddev uint32
-	// 	for _, v := range hits {
-	// 		stddev += uint32(math.Pow(float64(v-mean), 2))
-	// 	}
-	// 	stddev /= uint32(len(hits))
-	// 	t.Logf("n: %d, mean: %d, stddev: %d\n", c, mean, stddev)
-	// 	for i, ct := range hits {
-	// 		t.Logf("%d %d\n", i, ct)
-	// 	}
-	// }
-
-	// t.Log("dont")
-}
-
-func BenchmarkBytesUint64(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		BytesUint64([]byte{byte(i)})
-	}
-}
-
-func BenchmarkUint64(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		Uint64(uint64(i))
-	}
-}
-
-func BenchmarkFnv1a64(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		Fnv1a64(uint64(i))
-	}
-
-}
-
-func BenchmarkFnv1aBytes64(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		Fnv1aBytes64([]byte{byte(i)})
-	}
-
-}
-
-func BenchmarkFnv1a32(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		Fnv1a32(uint32(i))
-	}
-
-}
-
-func BenchmarkFnv1aBytes32(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		Fnv1aBytes32([]byte{byte(i)})
-	}
-
-}
-
-func Fnv1a64(n uint64) uint64 {
-	return (14695981039346656037 ^ n) * 1099511628211
-}
-
-func Fnv1aBytes64(data []byte) uint64 {
-	h := uint64(14695981039346656037)
-	for _, c := range data {
-		h ^= uint64(c)
-		h *= 14695981039346656037
+func hashfunc(data []byte) uint64 {
+	const mask uint64 = 0xFFFFFFFFFFFFFFFF
+	var h uint64 = mask
+	for i, b := range data {
+		h ^= uint64(b)*(mask^(h<<8))*(mask^(h<<40)) ^
+			(mask^(h<<16))*(mask^(h<<8)) ^
+			(mask^(h<<24))*(mask^(h<<56)) ^
+			(mask^(h<<32))*(uint64(i)^mask^uint64(b))
 	}
 	return h
 }
 
-func Fnv1a32(n uint32) uint32 {
-	return (2166136261 ^ n) * 16777619
+func TestNewHash(t *testing.T) {
+
+	file, err := os.Open("/usr/share/dict/words")
+	if err != nil {
+		t.Error(err)
+		t.Fail()
+	}
+	defer file.Close()
+
+	hashes := map[uint64]string{}
+
+	sc := bufio.NewScanner(file)
+	for sc.Scan() {
+		h := hashfunc(sc.Bytes())
+		if v, exists := hashes[h]; exists {
+			fmt.Printf("Collision: %x, %q, %q\n", h, v, sc.Text())
+		} else {
+			hashes[h] = sc.Text()
+			// fmt.Printf("%x\n", h)
+		}
+	}
+	if sc.Err() != nil {
+		t.Error(sc.Err())
+	}
+
+	inthashes := map[uint64]int{}
+
+	for i := 0; i < 1<<20; i++ {
+		var tmp [8]byte
+		binary.BigEndian.PutUint64(tmp[:], uint64(i))
+		h := hashfunc(tmp[:])
+		if v, exists := inthashes[h]; exists {
+			fmt.Printf("Collision: %x, %v, %v\n", h, v, i)
+		} else {
+			inthashes[h] = i
+			// fmt.Printf("%x\n", h)
+		}
+	}
+
+	randhashes := map[uint64][]byte{}
+
+	for i := 0; i < 1<<20; i++ {
+		var tmp [8]byte
+		rand.Read(tmp[:])
+		h := hashfunc(tmp[:])
+		if v, exists := randhashes[h]; exists {
+			fmt.Printf("Collision: %x, %v, %v\n", h, v, i)
+		} else {
+			randhashes[h] = tmp[:]
+			// fmt.Printf("%x\n", h)
+		}
+	}
+
 }
 
-func Fnv1aBytes32(data []byte) uint32 {
-	h := uint32(2166136261)
-	for _, c := range data {
-		h ^= uint32(c)
-		h *= 16777619
+func TestNewHashDistribution(t *testing.T) {
+
+	dist := map[byte]int{}
+
+	for i := 0; i < 10<<20; i++ {
+		sum := hashfunc([]byte(string(i)))
+		var tmp [8]byte
+		binary.BigEndian.PutUint64(tmp[:], sum)
+		dist[tmp[0]]++
+		dist[tmp[1]]++
+		dist[tmp[2]]++
+		dist[tmp[3]]++
+		dist[tmp[4]]++
+		dist[tmp[5]]++
+		dist[tmp[6]]++
+		dist[tmp[7]]++
 	}
-	return h
+
+	for c, ct := range dist {
+		fmt.Printf("%v: %d\n", c, ct)
+	}
+
+}
+
+func BenchmarkNewHashFile(b *testing.B) {
+
+	wordsdata, _ := ioutil.ReadFile("/usr/share/dict/words")
+	words := bytes.Split(wordsdata, []byte{'\n'})
+
+	b.ResetTimer()
+
+	for _, word := range words {
+		hashfunc(word)
+	}
+
+	b.N = len(words)
+
+}
+
+func BenchmarkNewHashIntegers(b *testing.B) {
+
+	var (
+		tmps [][]byte
+	)
+
+	for i := 0; i < 235887; i++ {
+		var tmp [8]byte
+		binary.BigEndian.PutUint64(tmp[:], uint64(i))
+		tmps = append(tmps, tmp[:])
+	}
+
+	b.ResetTimer()
+
+	for _, tmp := range tmps {
+		hashfunc(tmp)
+	}
+
+	b.N = len(tmps)
+
+}
+
+func BenchmarkMd5File(b *testing.B) {
+
+	wordsdata, _ := ioutil.ReadFile("/usr/share/dict/words")
+	words := bytes.Split(wordsdata, []byte{'\n'})
+
+	b.ResetTimer()
+
+	for _, word := range words {
+		md5.Sum(word)
+	}
+
+	b.N = len(words)
+
+}
+
+func BenchmarkFnv1aFile(b *testing.B) {
+
+	wordsdata, _ := ioutil.ReadFile("/usr/share/dict/words")
+	words := bytes.Split(wordsdata, []byte{'\n'})
+	h := fnv.New64a()
+
+	b.ResetTimer()
+
+	for _, word := range words {
+		h.Write(word)
+		h.Sum64()
+	}
+
+	b.N = len(words)
+
 }
